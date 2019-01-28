@@ -88,6 +88,8 @@ KeymasterWorker::upgradeKeyBlob(const LockedKeyBlobEntry& lockedEntry,
     std::tie(rc, blob, charBlob) =
         lockedEntry.readBlobs(userState->getEncryptionKey(), userState->getState());
 
+    userState = {};
+
     if (rc != ResponseCode::NO_ERROR) {
         return error = rc, result;
     }
@@ -106,7 +108,7 @@ KeymasterWorker::upgradeKeyBlob(const LockedKeyBlobEntry& lockedEntry,
 
         error = keyStore_->del(lockedEntry);
         if (!error.isOk()) {
-            ALOGI("upgradeKeyBlob keystore->del failed %d", (int)error);
+            ALOGI("upgradeKeyBlob keystore->del failed %d", error.getErrorCode());
             return;
         }
 
@@ -119,7 +121,7 @@ KeymasterWorker::upgradeKeyBlob(const LockedKeyBlobEntry& lockedEntry,
 
         error = keyStore_->put(lockedEntry, newBlob, charBlob);
         if (!error.isOk()) {
-            ALOGI("upgradeKeyBlob keystore->put failed %d", (int)error);
+            ALOGI("upgradeKeyBlob keystore->put failed %d", error.getErrorCode());
             return;
         }
         blob = std::move(newBlob);
@@ -314,7 +316,7 @@ bool KeymasterWorker::pruneOperation() {
     // one operation has been removed.
     auto rc = abort(oldest);
     if (operationMap_.getOperationCount() >= op_count_before_abort) {
-        ALOGE("Failed to abort pruneable operation %p, error: %d", oldest.get(), int32_t(rc));
+        ALOGE("Failed to abort pruneable operation %p, error: %d", oldest.get(), rc.getErrorCode());
         return false;
     }
     return true;
@@ -337,7 +339,6 @@ void KeymasterWorker::begin(LockedKeyBlobEntry lockedEntry, sp<IBinder> appToken
                         CAPTURE_MOVE(worker_cb)]() mutable {
         // Concurrently executed
 
-        auto key = blob2hidlVec(keyBlob);
         auto& dev = keymasterDevice_;
 
         KeyCharacteristics characteristics;
@@ -345,7 +346,7 @@ void KeymasterWorker::begin(LockedKeyBlobEntry lockedEntry, sp<IBinder> appToken
         {
             hidl_vec<uint8_t> clientId;
             hidl_vec<uint8_t> appData;
-            for (auto param : opParams) {
+            for (const auto& param : opParams) {
                 if (param.tag == Tag::APPLICATION_ID) {
                     clientId = authorizationValue(TAG_APPLICATION_ID, param).value();
                 } else if (param.tag == Tag::APPLICATION_DATA) {
@@ -382,7 +383,7 @@ void KeymasterWorker::begin(LockedKeyBlobEntry lockedEntry, sp<IBinder> appToken
         }
 
         // Create a keyid for this key.
-        auto keyid = KeymasterEnforcement::CreateKeyId(key);
+        auto keyid = KeymasterEnforcement::CreateKeyId(blob2hidlVec(keyBlob));
         if (!keyid) {
             ALOGE("Failed to create a key ID for authorization checking.");
             return worker_cb(operationFailed(ErrorCode::UNKNOWN_ERROR));
@@ -425,11 +426,25 @@ void KeymasterWorker::begin(LockedKeyBlobEntry lockedEntry, sp<IBinder> appToken
         };
 
         do {
-            rc = KS_HANDLE_HIDL_ERROR(
-                dev->begin(purpose, key, opParams.hidl_data(), authToken, hidlCb));
+            rc = KS_HANDLE_HIDL_ERROR(dev->begin(purpose, blob2hidlVec(keyBlob),
+                                                 opParams.hidl_data(), authToken, hidlCb));
             if (!rc.isOk()) {
                 LOG(ERROR) << "Got error " << rc << " from begin()";
                 return worker_cb(operationFailed(ResponseCode::SYSTEM_ERROR));
+            }
+
+            if (result.resultCode == ErrorCode::KEY_REQUIRES_UPGRADE) {
+                std::tie(rc, keyBlob) = upgradeKeyBlob(lockedEntry, opParams);
+                if (!rc.isOk()) {
+                    return worker_cb(operationFailed(rc));
+                }
+
+                rc = KS_HANDLE_HIDL_ERROR(dev->begin(purpose, blob2hidlVec(keyBlob),
+                                                     opParams.hidl_data(), authToken, hidlCb));
+                if (!rc.isOk()) {
+                    LOG(ERROR) << "Got error " << rc << " from begin()";
+                    return worker_cb(operationFailed(ResponseCode::SYSTEM_ERROR));
+                }
             }
             // If there are too many operations abort the oldest operation that was
             // started as pruneable and try again.

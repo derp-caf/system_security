@@ -196,10 +196,10 @@ class KeyBlobEntry {
     bool hasCharacteristicsBlob() const;
 
     bool operator<(const KeyBlobEntry& rhs) const {
-        return std::tie(alias_, user_dir_, uid_) < std::tie(rhs.alias_, rhs.user_dir_, uid_);
+        return std::tie(uid_, alias_, user_dir_) < std::tie(rhs.uid_, rhs.alias_, rhs.user_dir_);
     }
     bool operator==(const KeyBlobEntry& rhs) const {
-        return std::tie(alias_, user_dir_, uid_) == std::tie(rhs.alias_, rhs.user_dir_, uid_);
+        return std::tie(uid_, alias_, user_dir_) == std::tie(rhs.uid_, rhs.alias_, rhs.user_dir_);
     }
     bool operator!=(const KeyBlobEntry& rhs) const { return !(*this == rhs); }
 
@@ -271,5 +271,9 @@ class LockedKeyBlobEntry {
     inline const KeyBlobEntry& operator*() const { return *entry_; }
     inline const KeyBlobEntry* operator->() const { return entry_; }
 };
+
+// Visible for testing
+std::string encodeKeyName(const std::string& keyName);
+std::string decodeKeyName(const std::string& encodedName);
 
 #endif  // KEYSTORE_BLOB_H_
